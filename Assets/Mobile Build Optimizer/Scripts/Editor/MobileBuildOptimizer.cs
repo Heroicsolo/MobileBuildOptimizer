@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
@@ -9,10 +10,19 @@ namespace Heroicsolo.MobileBuildOptimizer
         private const long ThresholdAudioSizeInBytes = 200 * 1024; // 200 KB in bytes
         private const long MaxAudioSizeInBytes = 2048 * 1024; // 2 MB in bytes
 
-        private float optimizationProgress = 0f;
-        private string optimizationType = "";
-        private string imagesSizeStrBefore = "";
-        private string imagesSizeStrAfter = "";
+        private float _optimizationProgress = 0f;
+        private string _optimizationType = "";
+        private string _imagesSizeStrBefore = "";
+        private string _imagesSizeStrAfter = "";
+        private int _selectedImageResolutionIdx = 1;
+
+        private readonly List<int> _imageResolutions = new()
+        {
+            512,
+            1024,
+            2048,
+            4096
+        };
 
         [MenuItem("Tools/Mobile Build Optimizer", false, 21)]
         public static void ShowWindow()
@@ -22,21 +32,24 @@ namespace Heroicsolo.MobileBuildOptimizer
 
         private void OnGUI()
         {
-            if (string.IsNullOrEmpty(imagesSizeStrBefore))
+            if (string.IsNullOrEmpty(_imagesSizeStrBefore))
             {
-                imagesSizeStrBefore = ImagesSizeCalculator.CalculateImageSizes();
+                _imagesSizeStrBefore = ImagesSizeCalculator.CalculateImageSizes();
             }
 
-            GUILayout.Label($"Images size (original): {imagesSizeStrBefore}");
+            GUILayout.Label($"Images size (original): {_imagesSizeStrBefore}");
 
-            if (!string.IsNullOrEmpty(imagesSizeStrAfter))
+            if (!string.IsNullOrEmpty(_imagesSizeStrAfter))
             {
-                GUILayout.Label($"Images size (optimized): {imagesSizeStrAfter}");
+                GUILayout.Label($"Images size (optimized): {_imagesSizeStrAfter}");
             }
+            
+            GUILayout.Label("Image Resolution Limit:");
+            _selectedImageResolutionIdx = GUILayout.SelectionGrid(_selectedImageResolutionIdx, new []{"512px", "1024px", "2048px", "4096px"}, 4);
 
             if (GUILayout.Button("Optimize Textures"))
             {
-                OptimizeTextures();
+                OptimizeTextures(_imageResolutions[_selectedImageResolutionIdx]);
             }
 
             if (GUILayout.Button("Optimize Models"))
@@ -51,9 +64,9 @@ namespace Heroicsolo.MobileBuildOptimizer
 
             if (GUILayout.Button("Optimize Project Settings"))
             {
-                optimizationType = "Settings";
+                _optimizationType = "Settings";
                 OptimizeSettings();
-                optimizationProgress = 1f;
+                _optimizationProgress = 1f;
             }
 
             GUILayout.Space(10);
@@ -63,47 +76,48 @@ namespace Heroicsolo.MobileBuildOptimizer
                 OptimizeAll();
             }
 
-            if (optimizationProgress > 0f)
+            if (_optimizationProgress > 0f)
             {
                 GUILayout.Space(20);
 
-                if (optimizationProgress < 1f)
+                if (_optimizationProgress < 1f)
                 {
-                    GUILayout.Label($"Optimizing {optimizationType}: [{Mathf.CeilToInt(optimizationProgress * 100f)}%]");
+                    GUILayout.Label($"Optimizing {_optimizationType}: [{Mathf.CeilToInt(_optimizationProgress * 100f)}%]");
                 }
                 else
                 {
-                    GUILayout.Label($"Optimizing {optimizationType}: DONE");
+                    GUILayout.Label($"Optimizing {_optimizationType}: DONE");
                 }
             }
         }
 
-        private void OptimizeTextures()
+        private void OptimizeTextures(int imageSize = 1024)
         {
-            optimizationProgress = 0f;
-            optimizationType = "Textures";
+            _optimizationProgress = 0f;
+            _optimizationType = "Textures";
 
             // Get all texture assets in the project
-            string[] textureGUIDs = AssetDatabase.FindAssets("t:Texture", new string[] { "Assets" });
+            var textureGUIDs = AssetDatabase.FindAssets("t:Texture", new string[] { "Assets" });
 
-            int idx = 0;
+            var idx = 0;
 
-            foreach (string guid in textureGUIDs)
+            foreach (var guid in textureGUIDs)
             {
-                string assetPath = AssetDatabase.GUIDToAssetPath(guid);
-                TextureImporter textureImporter = AssetImporter.GetAtPath(assetPath) as TextureImporter;
-
+                var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                var textureImporter = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+                    
                 if (textureImporter != null)
                 {
+                    var fileBytes = File.ReadAllBytes(assetPath);
+                    var tempTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    tempTexture.LoadImage(fileBytes, markNonReadable: true);
+                    var rawSize = Mathf.Max(tempTexture.width, tempTexture.height);
+                    DestroyImmediate(tempTexture);
+                    
                     // Ensure the texture is readable before processing
                     textureImporter.isReadable = true;
                     textureImporter.mipmapEnabled = true;
-
-                    if (textureImporter.maxTextureSize > 1024)
-                    {
-                        // Apply resolution limit (1024x1024)
-                        textureImporter.maxTextureSize = 1024;
-                    }
+                    textureImporter.maxTextureSize = Mathf.Min(rawSize, imageSize);
 
                     // Enable crunch compression
                     textureImporter.textureCompression = TextureImporterCompression.Compressed;
@@ -121,7 +135,7 @@ namespace Heroicsolo.MobileBuildOptimizer
                 }
 
                 idx++;
-                optimizationProgress = (float)idx / textureGUIDs.Length;
+                _optimizationProgress = (float)idx / textureGUIDs.Length;
                 Repaint();
             }
 
@@ -129,23 +143,23 @@ namespace Heroicsolo.MobileBuildOptimizer
             AssetDatabase.Refresh();
             Debug.Log("Texture processing complete.");
 
-            imagesSizeStrAfter = ImagesSizeCalculator.CalculateImageSizes();
+            _imagesSizeStrAfter = ImagesSizeCalculator.CalculateImageSizes();
         }
 
         private void OptimizeModels()
         {
-            optimizationProgress = 0f;
-            optimizationType = "Models";
+            _optimizationProgress = 0f;
+            _optimizationType = "Models";
 
             // Get all model assets in the project
-            string[] modelGUIDs = AssetDatabase.FindAssets("t:Model", new string[] { "Assets" });
+            var modelGUIDs = AssetDatabase.FindAssets("t:Model", new string[] { "Assets" });
 
-            int idx = 0;
+            var idx = 0;
 
-            foreach (string guid in modelGUIDs)
+            foreach (var guid in modelGUIDs)
             {
-                string assetPath = AssetDatabase.GUIDToAssetPath(guid);
-                ModelImporter modelImporter = AssetImporter.GetAtPath(assetPath) as ModelImporter;
+                var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                var modelImporter = AssetImporter.GetAtPath(assetPath) as ModelImporter;
 
                 if (modelImporter != null)
                 {
@@ -166,7 +180,7 @@ namespace Heroicsolo.MobileBuildOptimizer
                 }
 
                 idx++;
-                optimizationProgress = (float)idx / modelGUIDs.Length;
+                _optimizationProgress = (float)idx / modelGUIDs.Length;
                 Repaint();
             }
 
@@ -177,26 +191,26 @@ namespace Heroicsolo.MobileBuildOptimizer
 
         private void OptimizeAudio()
         {
-            optimizationProgress = 0f;
-            optimizationType = "Audio";
+            _optimizationProgress = 0f;
+            _optimizationType = "Audio";
 
             // Get all audio assets in the project
-            string[] audioGUIDs = AssetDatabase.FindAssets("t:AudioClip", new string[] { "Assets" });
+            var audioGUIDs = AssetDatabase.FindAssets("t:AudioClip", new string[] { "Assets" });
 
-            int idx = 0;
+            var idx = 0;
 
-            foreach (string guid in audioGUIDs)
+            foreach (var guid in audioGUIDs)
             {
-                string assetPath = AssetDatabase.GUIDToAssetPath(guid);
-                AudioImporter audioImporter = AssetImporter.GetAtPath(assetPath) as AudioImporter;
+                var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                var audioImporter = AssetImporter.GetAtPath(assetPath) as AudioImporter;
 
                 if (audioImporter != null)
                 {
                     // Check the size of the audio file
-                    FileInfo fileInfo = new FileInfo(assetPath);
-                    long fileSizeInBytes = fileInfo.Length;
+                    var fileInfo = new FileInfo(assetPath);
+                    var fileSizeInBytes = fileInfo.Length;
 
-                    AudioImporterSampleSettings sampleSettings = audioImporter.defaultSampleSettings;
+                    var sampleSettings = audioImporter.defaultSampleSettings;
 
                     // Set Load Type based on the file size
                     if (fileSizeInBytes < ThresholdAudioSizeInBytes)
@@ -228,7 +242,7 @@ namespace Heroicsolo.MobileBuildOptimizer
                 }
 
                 idx++;
-                optimizationProgress = (float)idx / audioGUIDs.Length;
+                _optimizationProgress = (float)idx / audioGUIDs.Length;
                 Repaint();
             }
 
@@ -272,7 +286,7 @@ namespace Heroicsolo.MobileBuildOptimizer
 
         private void OptimizeAll()
         {
-            OptimizeTextures();
+            OptimizeTextures(_imageResolutions[_selectedImageResolutionIdx]);
             OptimizeModels();
             OptimizeAudio();
             OptimizeSettings();
